@@ -1,0 +1,27 @@
+{
+  "name": "saviynt-api-mcp",
+  "version": "1.0.0",
+  "description": "Model Context Protocol server for Saviynt APIs",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts --transport=stdio",
+    "dev:stdio": "tsx src/index.ts --transport=stdio",
+    "dev:http": "tsx src/index.ts --transport=http",
+    "start": "node build/index.js --transport=stdio",
+    "start:stdio": "node build/index.js --transport=stdio",
+    "start:http": "node build/index.js --transport=http",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "zod": "^4.0.0",
+    "zod-to-json-schema": "^3.25.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
