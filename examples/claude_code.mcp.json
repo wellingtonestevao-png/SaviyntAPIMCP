@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "saviynt-vercel": {
+      "type": "http",
+      "url": "https://<your-project>.vercel.app/mcp"
+    }
+  }
+}

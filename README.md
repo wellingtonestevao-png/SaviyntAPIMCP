@@ -216,3 +216,7 @@ Delete:
   }
 }
 ```
+
+Saved client templates:
+- `examples/claude_desktop_config.mcp-remote.json`
+- `examples/claude_code.mcp.json`

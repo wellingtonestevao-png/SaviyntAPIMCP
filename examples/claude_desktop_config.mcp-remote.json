@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "saviynt-vercel": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://<your-project>.vercel.app/mcp"
+      ]
+    }
+  }
+}
