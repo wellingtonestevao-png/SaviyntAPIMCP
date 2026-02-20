@@ -1,128 +1,71 @@
-# Saviynt MCP Server Setup
+# Saviynt MCP Setup (Vercel Only)
 
-## Transports
-- `stdio` (best for Claude Desktop/local MCP clients)
-- `http` with:
-  - Streamable HTTP: `POST /mcp` (recommended modern MCP transport)
-  - Legacy SSE: `GET /sse` + `POST /messages?sessionId=...`
+This project is configured for remote MCP usage over Streamable HTTP on Vercel.
 
-## Run Locally
+## Endpoints
 
-### 1) Build
+- MCP: `https://<your-project>.vercel.app/mcp`
+- Health: `https://<your-project>.vercel.app/health`
+
+## 1) Install and Validate
+
 ```bash
+npm install
 npm run build
 ```
 
-### 2) Start stdio transport
+## 2) Configure Vercel Environment Variables
+
+Required:
+- `SAVIYNT_BASE_URL`
+- `SAVIYNT_SERVICE_USERNAME`
+- `SAVIYNT_SERVICE_PASSWORD`
+
+Optional:
+- `SAVIYNT_ENABLE_WRITE` (`true`/`false`)
+- `SAVIYNT_API_PATH` (default `api/v5`)
+- `SAVIYNT_MAX_RESULT_TEXT_CHARS` (default `20000`)
+- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` (default `4000`)
+
+## 3) Deploy
+
+Using Vercel dashboard:
+- Import this GitHub repo and deploy
+
+Using CLI:
+
 ```bash
-npm run start:stdio
+vercel
+vercel --prod
 ```
 
-### 3) Start HTTP transport
+## 4) Verify
+
+Health check:
+
 ```bash
-npm run start:http
+curl https://<your-project>.vercel.app/health
 ```
 
-Default URL: `http://127.0.0.1:3000`
+Expected:
 
-## Quick HTTP Smoke Test
-```bash
-curl http://127.0.0.1:3000/health
-```
-
-Expected response:
 ```json
-{"ok":true,"name":"saviynt-api-mcp","sessions":0}
+{"ok":true,"name":"saviynt-api-mcp","transport":"streamable-http","mode":"stateless"}
 ```
 
-## Claude Desktop (local stdio)
-
-Add to Claude MCP config:
+## 5) MCP Client Configuration Example
 
 ```json
 {
   "mcpServers": {
     "saviynt": {
-      "command": "node",
-      "args": [
-        "C:\\Users\\Wellington Estevao\\Documents\\VSSTudio\\SaviyntAPIMCP\\build\\index.js",
-        "--transport=stdio"
-      ],
-      "env": {
-        "SAVIYNT_BASE_URL": "https://YOUR-SAVIYNT-HOST",
-        "SAVIYNT_ENABLE_WRITE": "false"
-      }
+      "url": "https://<your-project>.vercel.app/mcp"
     }
   }
 }
 ```
 
-## NPX-style Launch (local, stdio)
+## Authentication Notes
 
-If you prefer `npx` style:
-
-```json
-{
-  "mcpServers": {
-    "saviynt": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "tsx",
-        "C:\\Users\\Wellington Estevao\\Documents\\VSSTudio\\SaviyntAPIMCP\\src\\index.ts",
-        "--transport=stdio"
-      ]
-    }
-  }
-}
-```
-
-## Remote URL Bridge for stdio-only clients
-
-If a client only supports stdio but you want to connect to an HTTP MCP URL:
-
-```json
-{
-  "mcpServers": {
-    "saviynt-remote": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://127.0.0.1:3000/mcp"
-      ]
-    }
-  }
-}
-```
-
-## Environment Variables
-- `SAVIYNT_BASE_URL`: default Saviynt host (used when tool call does not pass `url`)
-- `SAVIYNT_SERVICE_USERNAME`: service account username for stateless/serverless auth
-- `SAVIYNT_SERVICE_PASSWORD`: service account password for stateless/serverless auth
-- `SAVIYNT_USERNAME`: fallback alias for `SAVIYNT_SERVICE_USERNAME`
-- `SAVIYNT_PASSWORD`: fallback alias for `SAVIYNT_SERVICE_PASSWORD`
-- `SAVIYNT_API_PATH`: API path segment for typed tools (default `api/v5`)
-- `SAVIYNT_ENABLE_WRITE`: set to `true` to enable write tools
-- `SAVIYNT_MAX_RESULT_TEXT_CHARS`: max tool text payload before truncation (default `20000`)
-- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS`: max full structured payload before summary fallback (default `4000`)
-- `MCP_TRANSPORT`: optional default transport (`stdio` or `http`)
-- `PORT` or `MCP_PORT`: HTTP port (default `3000`)
-- `HOST`: bind host (default `127.0.0.1`)
-
-## Deploy on Vercel
-
-This repo includes `api/server.ts` and `vercel.json` for Vercel MCP hosting.
-
-1. Import the repo into Vercel
-2. Set these environment variables in Vercel:
-   - `SAVIYNT_BASE_URL`
-   - `SAVIYNT_SERVICE_USERNAME`
-   - `SAVIYNT_SERVICE_PASSWORD`
-   - `SAVIYNT_ENABLE_WRITE` (optional)
-3. Deploy
-4. Use:
-   - MCP endpoint: `https://<your-project>.vercel.app/mcp`
-   - Health endpoint: `https://<your-project>.vercel.app/health`
-
-Note: Vercel function transport is configured as stateless. Prefer service-account env auth over runtime `saviynt_login` for reliable behavior across instances.
+- Preferred in Vercel: service-account environment credentials.
+- `saviynt_login` still exists for compatibility, but do not rely on it for persistence in stateless/multi-instance serverless runtime.

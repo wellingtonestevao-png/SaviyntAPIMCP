@@ -3,16 +3,11 @@
   "version": "1.0.0",
   "description": "Model Context Protocol server for Saviynt APIs",
   "type": "module",
-  "main": "build/index.js",
   "scripts": {
-    "build": "tsc",
-    "dev": "tsx src/index.ts --transport=stdio",
-    "dev:stdio": "tsx src/index.ts --transport=stdio",
-    "dev:http": "tsx src/index.ts --transport=http",
-    "start": "node build/index.js --transport=stdio",
-    "start:stdio": "node build/index.js --transport=stdio",
-    "start:http": "node build/index.js --transport=http",
-    "watch": "tsc --watch"
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "dev": "npx vercel dev",
+    "watch": "tsc --watch --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",

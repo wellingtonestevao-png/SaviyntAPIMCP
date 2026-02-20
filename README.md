@@ -1,16 +1,23 @@
 # Saviynt API MCP Server
 
-MCP server for Saviynt APIs with:
-- `stdio` transport for desktop MCP clients (Claude Desktop, etc.)
-- HTTP transport with Streamable HTTP (`/mcp`) and SSE compatibility (`/sse`, `/messages`)
-- Vercel serverless Streamable HTTP endpoint (`/mcp`) via `api/server.ts`
+Vercel-only MCP server for Saviynt APIs using Streamable HTTP transport.
 
-The server includes Saviynt login/token handling, read tools, workflow write tools, and generic create/modify/delete tools.
+This project is configured for remote MCP clients through a URL endpoint, not local stdio transport.
+
+## Endpoints
+
+- MCP: `POST /mcp`
+- Health: `GET /health`
+
+Configured by:
+- `api/server.ts`
+- `vercel.json`
 
 ## Requirements
 
 - Node.js 18+
 - npm
+- Vercel account/project
 
 ## Install
 
@@ -18,103 +25,56 @@ The server includes Saviynt login/token handling, read tools, workflow write too
 npm install
 ```
 
-## Build
+## Validate Types
 
 ```bash
 npm run build
 ```
 
-## Run
+## Local Vercel Dev
 
 ```bash
-# stdio (best for Claude Desktop/local MCP)
-npm run start:stdio
-
-# HTTP server (Streamable HTTP + SSE compatibility)
-npm run start:http
+npm run dev
 ```
 
-Dev scripts:
-
-```bash
-npm run dev:stdio
-npm run dev:http
-```
-
-## Transports
-
-When running local HTTP mode (`npm run start:http`), default bind is `http://127.0.0.1:3000`.
-
-- Streamable HTTP endpoint: `POST /mcp`
-- Legacy SSE endpoints:
-  - `GET /sse`
-  - `POST /messages?sessionId=...`
-- Health: `GET /health`
-
-Vercel deployment exposes:
-- Streamable HTTP endpoint: `/mcp`
-- Health endpoint: `/health`
-- No legacy SSE routes in the Vercel function entrypoint
-
-## Environment Variables
-
-- `SAVIYNT_BASE_URL`: default Saviynt base URL (required for Vercel/service-account mode)
-- `SAVIYNT_SERVICE_USERNAME`: service account username for stateless/serverless mode
-- `SAVIYNT_SERVICE_PASSWORD`: service account password for stateless/serverless mode
-- `SAVIYNT_USERNAME`: fallback alias for `SAVIYNT_SERVICE_USERNAME`
-- `SAVIYNT_PASSWORD`: fallback alias for `SAVIYNT_SERVICE_PASSWORD`
-- `SAVIYNT_API_PATH`: API path segment used by typed tools (default `api/v5`)
-- `SAVIYNT_ENABLE_WRITE`: `true` to enable write tools (default is disabled)
-- `SAVIYNT_MAX_RESULT_TEXT_CHARS`: max size of tool text response before truncation (default `20000`)
-- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS`: max size for full `structuredContent` before summary fallback (default `4000`)
-- `MCP_TRANSPORT`: optional default transport (`stdio` or `http`)
-- `PORT` or `MCP_PORT`: HTTP port (default `3000`)
-- `HOST`: HTTP host (default `127.0.0.1`)
-
-## Authentication by Mode
-
-Local/stateful mode (`stdio` or local HTTP):
-1. Call `saviynt_login` (or `login`) with:
-   - `username`
-   - `password`
-   - optional `url` (Saviynt base URL override)
-2. Server obtains and caches a bearer token for the current MCP session.
-3. Token refresh is automatic on expiry/401.
-
-Vercel/stateless mode:
-- Set `SAVIYNT_BASE_URL`, `SAVIYNT_SERVICE_USERNAME`, and `SAVIYNT_SERVICE_PASSWORD`
-- The server authenticates from environment credentials each invocation
-- Do not rely on runtime `saviynt_login` persistence across requests/instances
-
-Check auth status with `saviynt_get_token_status` (or `get_token_status`).
-
-## Response Size Limits
-
-To avoid MCP client disconnects on very large payloads, tool responses are truncated automatically when needed.
-
-- `SAVIYNT_MAX_RESULT_TEXT_CHARS` controls max text payload size (default `20000`)
-- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` controls when `structuredContent` is summarized (default `4000`)
-
-For huge Saviynt datasets, use tighter filters/pagination and smaller limits in tool arguments.
+Default local URL from Vercel dev is typically `http://127.0.0.1:3000`.
 
 ## Deploy to Vercel
 
-This repo includes:
-- `api/server.ts`: Vercel function entrypoint for MCP Streamable HTTP (stateless transport)
-- `vercel.json`: rewrites `/mcp` and `/health` to the Vercel function
-
-Steps:
-1. Import this repo into Vercel.
-2. Set environment variables in Vercel project settings:
+1. Import this repo into Vercel (or run `vercel` from CLI).
+2. Set project environment variables:
    - `SAVIYNT_BASE_URL`
    - `SAVIYNT_SERVICE_USERNAME`
    - `SAVIYNT_SERVICE_PASSWORD`
-   - `SAVIYNT_ENABLE_WRITE` (`true`/`false`)
-   - optional: `SAVIYNT_MAX_RESULT_TEXT_CHARS`, `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS`
+   - `SAVIYNT_ENABLE_WRITE` (`true` or `false`)
+   - optional: `SAVIYNT_API_PATH` (default `api/v5`)
+   - optional: `SAVIYNT_MAX_RESULT_TEXT_CHARS` (default `20000`)
+   - optional: `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` (default `4000`)
 3. Deploy.
-4. Use your MCP URL:
+4. Use:
    - `https://<your-project>.vercel.app/mcp`
-   - Health check: `https://<your-project>.vercel.app/health`
+   - `https://<your-project>.vercel.app/health`
+
+## Authentication Model
+
+Recommended for Vercel/serverless:
+- Use `SAVIYNT_SERVICE_USERNAME` + `SAVIYNT_SERVICE_PASSWORD` + `SAVIYNT_BASE_URL`.
+- Server acquires and refreshes bearer tokens during requests.
+
+The tools `saviynt_login` / `login` still exist for compatibility, but should not be the primary auth method in stateless multi-instance deployments.
+
+Check current auth state with:
+- `saviynt_get_token_status`
+- `get_token_status`
+
+## Response Size Limits
+
+Large Saviynt payloads can exceed MCP client limits. This server truncates oversized responses:
+
+- `SAVIYNT_MAX_RESULT_TEXT_CHARS`: text payload cap (default `20000`)
+- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS`: structured content cap (default `4000`)
+
+For large datasets, use tighter filters, limits, and pagination.
 
 ## Tool List
 
@@ -160,7 +120,7 @@ Workflow writes:
 - `saviynt_revoke_access`
 - `approve_reject_entire_request`
 
-Typed Saviynt v5 writes (from Chicago API reference):
+Typed Saviynt v5 writes:
 - `saviynt_create_user`
 - `saviynt_update_user`
 - `saviynt_create_account`
@@ -242,30 +202,14 @@ Delete:
 }
 ```
 
-## Claude Desktop Example
-
-Use stdio transport:
+## MCP Client URL Config Example
 
 ```json
 {
   "mcpServers": {
     "saviynt": {
-      "command": "node",
-      "args": [
-        "C:\\Users\\Wellington Estevao\\Documents\\VSSTudio\\SaviyntAPIMCP\\build\\index.js",
-        "--transport=stdio"
-      ],
-      "env": {
-        "SAVIYNT_BASE_URL": "https://your-saviynt-host",
-        "SAVIYNT_ENABLE_WRITE": "false"
-      }
+      "url": "https://<your-project>.vercel.app/mcp"
     }
   }
 }
 ```
-
-For a URL bridge pattern, see `MCP_SETUP.md`.
-
-## Notes
-
-- If you share your exact Saviynt API spec/endpoints, this server can be extended with strongly typed create/update/delete tools (for users, roles, endpoints, applications, etc.) instead of only generic CRUD wrappers.
