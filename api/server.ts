@@ -25,7 +25,26 @@ function getRequestPath(req: IncomingMessage): string {
 
 export default async function handler(req: VercelLikeRequest, res: ServerResponse): Promise<void> {
   const path = getRequestPath(req);
-  if (path.endsWith("/health") || path === "/health") {
+  if (path === "/" || path === "") {
+    sendJson(res, 200, {
+      ok: true,
+      name: "saviynt-api-mcp",
+      endpoints: {
+        mcp: "/mcp",
+        health: "/health",
+        compatibleMcp: "/api/mcp",
+        compatibleHealth: "/api/health",
+      },
+    });
+    return;
+  }
+
+  if (
+    path === "/health" ||
+    path === "/health/" ||
+    path === "/api/health" ||
+    path === "/api/health/"
+  ) {
     sendJson(res, 200, {
       ok: true,
       name: "saviynt-api-mcp",

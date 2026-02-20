@@ -1,8 +1,11 @@
 {
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/mcp", "destination": "/api/server" },
-    { "source": "/health", "destination": "/api/server" }
+    { "source": "/", "destination": "/api/server" },
+    { "source": "/mcp/:path*", "destination": "/api/server" },
+    { "source": "/api/mcp/:path*", "destination": "/api/server" },
+    { "source": "/health/:path*", "destination": "/api/server" },
+    { "source": "/api/health/:path*", "destination": "/api/server" }
   ],
   "functions": {
     "api/server.ts": {

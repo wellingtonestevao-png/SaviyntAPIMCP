@@ -6,6 +6,9 @@ This project is configured for remote MCP usage over Streamable HTTP on Vercel.
 
 - MCP: `https://<your-project>.vercel.app/mcp`
 - Health: `https://<your-project>.vercel.app/health`
+- Compatibility aliases:
+  - MCP: `https://<your-project>.vercel.app/api/mcp`
+  - Health: `https://<your-project>.vercel.app/api/health`
 
 ## 1) Install and Validate
 

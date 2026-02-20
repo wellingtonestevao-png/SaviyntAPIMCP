@@ -8,6 +8,9 @@ This project is configured for remote MCP clients through a URL endpoint, not lo
 
 - MCP: `POST /mcp`
 - Health: `GET /health`
+- Compatibility aliases:
+  - MCP: `/api/mcp`
+  - Health: `/api/health`
 
 Configured by:
 - `api/server.ts`
