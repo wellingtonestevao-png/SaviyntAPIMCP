@@ -1,4 +1,5 @@
 {
+  "outputDirectory": "public",
   "rewrites": [
     { "source": "/mcp", "destination": "/api/server" },
     { "source": "/health", "destination": "/api/server" }
