@@ -5,7 +5,7 @@ MCP server for Saviynt APIs with:
 - HTTP transport with Streamable HTTP (`/mcp`) and SSE compatibility (`/sse`, `/messages`)
 - Vercel serverless Streamable HTTP endpoint (`/mcp`) via `api/server.ts`
 
-The server includes login/session token handling, read tools, workflow write tools, and generic create/modify/delete tools.
+The server includes Saviynt login/token handling, read tools, workflow write tools, and generic create/modify/delete tools.
 
 ## Requirements
 
@@ -43,7 +43,7 @@ npm run dev:http
 
 ## Transports
 
-When running HTTP mode, default bind is `http://127.0.0.1:3000`.
+When running local HTTP mode (`npm run start:http`), default bind is `http://127.0.0.1:3000`.
 
 - Streamable HTTP endpoint: `POST /mcp`
 - Legacy SSE endpoints:
@@ -51,11 +51,16 @@ When running HTTP mode, default bind is `http://127.0.0.1:3000`.
   - `POST /messages?sessionId=...`
 - Health: `GET /health`
 
+Vercel deployment exposes:
+- Streamable HTTP endpoint: `/mcp`
+- Health endpoint: `/health`
+- No legacy SSE routes in the Vercel function entrypoint
+
 ## Environment Variables
 
-- `SAVIYNT_BASE_URL`: default Saviynt base URL
-- `SAVIYNT_SERVICE_USERNAME`: optional service account username for stateless/serverless mode
-- `SAVIYNT_SERVICE_PASSWORD`: optional service account password for stateless/serverless mode
+- `SAVIYNT_BASE_URL`: default Saviynt base URL (required for Vercel/service-account mode)
+- `SAVIYNT_SERVICE_USERNAME`: service account username for stateless/serverless mode
+- `SAVIYNT_SERVICE_PASSWORD`: service account password for stateless/serverless mode
 - `SAVIYNT_USERNAME`: fallback alias for `SAVIYNT_SERVICE_USERNAME`
 - `SAVIYNT_PASSWORD`: fallback alias for `SAVIYNT_SERVICE_PASSWORD`
 - `SAVIYNT_API_PATH`: API path segment used by typed tools (default `api/v5`)
@@ -66,8 +71,9 @@ When running HTTP mode, default bind is `http://127.0.0.1:3000`.
 - `PORT` or `MCP_PORT`: HTTP port (default `3000`)
 - `HOST`: HTTP host (default `127.0.0.1`)
 
-## Authentication Flow
+## Authentication by Mode
 
+Local/stateful mode (`stdio` or local HTTP):
 1. Call `saviynt_login` (or `login`) with:
    - `username`
    - `password`
@@ -75,10 +81,21 @@ When running HTTP mode, default bind is `http://127.0.0.1:3000`.
 2. Server obtains and caches a bearer token for the current MCP session.
 3. Token refresh is automatic on expiry/401.
 
-For serverless/stateless deployments (for example Vercel), set `SAVIYNT_SERVICE_USERNAME` and
-`SAVIYNT_SERVICE_PASSWORD` so tools can authenticate without relying on in-memory session login state.
+Vercel/stateless mode:
+- Set `SAVIYNT_BASE_URL`, `SAVIYNT_SERVICE_USERNAME`, and `SAVIYNT_SERVICE_PASSWORD`
+- The server authenticates from environment credentials each invocation
+- Do not rely on runtime `saviynt_login` persistence across requests/instances
 
 Check auth status with `saviynt_get_token_status` (or `get_token_status`).
+
+## Response Size Limits
+
+To avoid MCP client disconnects on very large payloads, tool responses are truncated automatically when needed.
+
+- `SAVIYNT_MAX_RESULT_TEXT_CHARS` controls max text payload size (default `20000`)
+- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` controls when `structuredContent` is summarized (default `4000`)
+
+For huge Saviynt datasets, use tighter filters/pagination and smaller limits in tool arguments.
 
 ## Deploy to Vercel
 
@@ -93,6 +110,7 @@ Steps:
    - `SAVIYNT_SERVICE_USERNAME`
    - `SAVIYNT_SERVICE_PASSWORD`
    - `SAVIYNT_ENABLE_WRITE` (`true`/`false`)
+   - optional: `SAVIYNT_MAX_RESULT_TEXT_CHARS`, `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS`
 3. Deploy.
 4. Use your MCP URL:
    - `https://<your-project>.vercel.app/mcp`
