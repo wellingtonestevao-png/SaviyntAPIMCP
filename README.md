@@ -46,13 +46,14 @@ Default local URL from Vercel dev is typically `http://127.0.0.1:3000`.
 
 1. Import this repo into Vercel (or run `vercel` from CLI).
 2. Set project environment variables:
-   - `SAVIYNT_BASE_URL`
-   - `SAVIYNT_SERVICE_USERNAME`
-   - `SAVIYNT_SERVICE_PASSWORD`
    - `SAVIYNT_ENABLE_WRITE` (`true` or `false`)
    - optional: `SAVIYNT_API_PATH` (default `api/v5`)
    - optional: `SAVIYNT_MAX_RESULT_TEXT_CHARS` (default `20000`)
    - optional: `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` (default `4000`)
+   - optional for env-based auth:
+     - `SAVIYNT_BASE_URL`
+     - `SAVIYNT_SERVICE_USERNAME`
+     - `SAVIYNT_SERVICE_PASSWORD`
 3. Deploy.
 4. Use:
    - `https://<your-project>.vercel.app/mcp`
@@ -60,11 +61,22 @@ Default local URL from Vercel dev is typically `http://127.0.0.1:3000`.
 
 ## Authentication Model
 
-Recommended for Vercel/serverless:
-- Use `SAVIYNT_SERVICE_USERNAME` + `SAVIYNT_SERVICE_PASSWORD` + `SAVIYNT_BASE_URL`.
-- Server acquires and refreshes bearer tokens during requests.
+The server supports two auth modes:
 
-The tools `saviynt_login` / `login` still exist for compatibility, but should not be the primary auth method in stateless multi-instance deployments.
+1. Runtime profile tools
+   - Use `saviynt_upsert_profile` (or `saviynt_login`) with `profileId`, `username`, `password`, and `url`.
+   - Set active profile with `saviynt_set_active_profile` or pass `profileId` directly in tool calls.
+   - Bearer tokens are cached in memory per `profileId + baseUrl`.
+
+2. Environment default profile
+   - Set `SAVIYNT_SERVICE_USERNAME`, `SAVIYNT_SERVICE_PASSWORD`, and `SAVIYNT_BASE_URL`.
+   - Server auto-creates profile `env-default` and uses it when no runtime profile is active.
+
+All Saviynt API tools (except profile-management tools) accept optional `profileId`.
+
+Important for Vercel:
+- This project runs in stateless serverless mode. In-memory profile/token cache can reset between invocations.
+- For the most reliable production behavior, prefer env-based credentials or add external credential/session storage.
 
 Check current auth state with:
 - `saviynt_get_token_status`
@@ -82,6 +94,10 @@ For large datasets, use tighter filters, limits, and pagination.
 ## Tool List
 
 ### Authentication
+- `saviynt_upsert_profile`
+- `saviynt_set_active_profile`
+- `saviynt_list_profiles`
+- `saviynt_delete_profile`
 - `saviynt_login`
 - `login`
 - `saviynt_get_token_status`
@@ -157,6 +173,36 @@ Generic CRUD writes:
 Raw API access:
 - `saviynt_raw_request`
 - `raw_request` (alias)
+
+## Profile Setup Example
+
+Create/update profile and authenticate:
+
+```json
+{
+  "tool": "saviynt_upsert_profile",
+  "arguments": {
+    "profileId": "lab",
+    "username": "admin",
+    "password": "your-password",
+    "url": "https://your-tenant.saviyntcloud.com",
+    "setActive": true,
+    "authenticate": true
+  }
+}
+```
+
+Call a Saviynt tool with explicit profile:
+
+```json
+{
+  "tool": "saviynt_get_user_profile",
+  "arguments": {
+    "userId": "edwardemployee",
+    "profileId": "lab"
+  }
+}
+```
 
 ## Generic CRUD Examples
 

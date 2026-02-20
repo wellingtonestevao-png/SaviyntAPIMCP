@@ -1,74 +1,139 @@
-# Saviynt MCP Setup (Vercel Only)
+# Saviynt MCP Setup
 
-This project is configured for remote MCP usage over Streamable HTTP on Vercel.
+This project is a Vercel-hosted MCP server using Streamable HTTP.
 
-## Endpoints
+## Transport and Endpoints
 
-- MCP: `https://<your-project>.vercel.app/mcp`
-- Health: `https://<your-project>.vercel.app/health`
+- Transport: Streamable HTTP
+- MCP endpoint: `POST /mcp`
+- Health endpoint: `GET /health`
 - Compatibility aliases:
-  - MCP: `https://<your-project>.vercel.app/api/mcp`
-  - Health: `https://<your-project>.vercel.app/api/health`
+  - MCP: `/api/mcp`
+  - Health: `/api/health`
 
-## 1) Install and Validate
+Base URL example:
+- `https://saviynt-apimcp.vercel.app/mcp`
 
+## Deploy
+
+1. Install dependencies:
 ```bash
 npm install
+```
+
+2. Validate types:
+```bash
 npm run build
 ```
 
-## 2) Configure Vercel Environment Variables
+3. Deploy to Vercel:
+```bash
+vercel
+```
 
-Required:
+## Required and Optional Environment Variables
+
+Required for write tools:
+- `SAVIYNT_ENABLE_WRITE` (`true` or `false`)
+
+Optional:
+- `SAVIYNT_API_PATH` (default: `api/v5`)
+- `SAVIYNT_MAX_RESULT_TEXT_CHARS` (default: `20000`)
+- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` (default: `4000`)
+
+Optional for environment-based auth profile:
 - `SAVIYNT_BASE_URL`
 - `SAVIYNT_SERVICE_USERNAME`
 - `SAVIYNT_SERVICE_PASSWORD`
 
-Optional:
-- `SAVIYNT_ENABLE_WRITE` (`true`/`false`)
-- `SAVIYNT_API_PATH` (default `api/v5`)
-- `SAVIYNT_MAX_RESULT_TEXT_CHARS` (default `20000`)
-- `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS` (default `4000`)
+## Authentication Model
 
-## 3) Deploy
+The server supports two patterns.
 
-Using Vercel dashboard:
-- Import this GitHub repo and deploy
+1. Runtime profile auth (recommended for testing with multiple tenants):
+- Use `saviynt_upsert_profile` with `profileId`, `username`, `password`, `url`.
+- Optionally switch default profile with `saviynt_set_active_profile`.
+- Pass `profileId` in tool calls when needed.
 
-Using CLI:
+2. Environment default profile:
+- Configure `SAVIYNT_BASE_URL`, `SAVIYNT_SERVICE_USERNAME`, `SAVIYNT_SERVICE_PASSWORD`.
+- Server auto-creates `env-default` profile.
 
-```bash
-vercel
-vercel --prod
-```
+Token behavior:
+- Bearer tokens are cached in-memory per `profileId + baseUrl`.
+- On Vercel serverless, cache can reset between invocations.
 
-## 4) Verify
+## Claude Configuration
 
-Health check:
-
-```bash
-curl https://<your-project>.vercel.app/health
-```
-
-Expected:
-
-```json
-{"ok":true,"name":"saviynt-api-mcp","transport":"streamable-http","mode":"stateless"}
-```
-
-## 5) MCP Client Configuration Example
+If your Claude client supports URL MCP servers directly:
 
 ```json
 {
   "mcpServers": {
-    "saviynt": {
-      "url": "https://<your-project>.vercel.app/mcp"
+    "saviynt-vercel": {
+      "url": "https://saviynt-apimcp.vercel.app/mcp"
     }
   }
 }
 ```
 
-## Authentication Notes
+If your Claude client expects stdio command, use `mcp-remote` bridge:
 
-- Preferred in Vercel: service-account environment credentials.
-- `saviynt_login` still exists for compatibility, but do not rely on it for persistence in stateless/multi-instance serverless runtime.
+```json
+{
+  "mcpServers": {
+    "saviynt-vercel": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://saviynt-apimcp.vercel.app/mcp"
+      ]
+    }
+  }
+}
+```
+
+## Quick Test Flow
+
+1. Check health:
+```bash
+curl https://saviynt-apimcp.vercel.app/health
+```
+
+2. In Claude, call:
+- `saviynt_upsert_profile`
+- `saviynt_get_token_status`
+- `saviynt_get_user_profile`
+
+Example profile setup call:
+
+```json
+{
+  "tool": "saviynt_upsert_profile",
+  "arguments": {
+    "profileId": "lab",
+    "username": "admin",
+    "password": "your-password",
+    "url": "https://your-tenant.saviyntcloud.com",
+    "setActive": true,
+    "authenticate": true
+  }
+}
+```
+
+## Troubleshooting
+
+Server starts then disconnects:
+- Confirm MCP path is `/mcp` (not `/`).
+- Confirm Claude config points to `https://.../mcp`.
+
+Responses too large:
+- Use tighter filters and limits.
+- Lower response limits with:
+  - `SAVIYNT_MAX_RESULT_TEXT_CHARS`
+  - `SAVIYNT_MAX_STRUCTURED_CONTENT_CHARS`
+
+Auth errors:
+- Call `saviynt_get_token_status` and confirm active profile.
+- Re-run `saviynt_upsert_profile` with correct URL and credentials.

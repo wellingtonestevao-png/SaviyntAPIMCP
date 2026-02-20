@@ -1,15 +1,21 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import * as z from "zod/v4";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 type JsonObject = Record<string, unknown>;
 
-interface SaviyntAuthState {
+interface SaviyntProfileState {
+  profileId: string;
   username: string;
   password: string;
   baseUrl: string;
   source: "session" | "env";
+  updatedAt: number;
+}
+
+interface SaviyntTokenState {
   bearerToken?: string;
   tokenExpiresAt?: number;
 }
@@ -20,6 +26,7 @@ interface ApiRequestOptions {
   query?: JsonObject;
   body?: JsonObject;
   baseUrl?: string;
+  profileId?: string;
   requiresAuth?: boolean;
   retryOnUnauthorized?: boolean;
 }
@@ -34,6 +41,8 @@ const WRITE_METHODS = new Set<HttpMethod>(["POST", "PUT", "PATCH", "DELETE"]);
 const TEXT_CONTENT = "text" as const;
 const DEFAULT_MAX_RESULT_TEXT_CHARS = 20000;
 const DEFAULT_MAX_STRUCTURED_CONTENT_CHARS = 4000;
+const DEFAULT_PROFILE_ID = "default";
+const ENV_PROFILE_ID = "env-default";
 
 class LoginRequiredError extends Error {}
 
@@ -58,6 +67,13 @@ function asString(value: unknown): string | undefined {
 
 function asNumber(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  return undefined;
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") {
     return value;
   }
   return undefined;
@@ -175,6 +191,7 @@ function loginRequiredResult(message: string): CallToolResult {
       action: "render_login_form",
       form: {
         fields: [
+          { name: "profileId", type: "text", label: "Profile ID (optional)" },
           { name: "username", type: "text", label: "Username" },
           { name: "password", type: "password", label: "Password" },
           { name: "url", type: "url", label: "Saviynt Base URL" },
@@ -342,7 +359,7 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
   const server = new McpServer(
     {
       name: "saviynt-api-mcp",
-      version: "2.0.0",
+      version: "2.1.0",
     },
     {
       capabilities: { logging: {} },
@@ -361,13 +378,52 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     process.env.SAVIYNT_SERVICE_PASSWORD || process.env.SAVIYNT_PASSWORD || ""
   );
 
-  let authState: SaviyntAuthState | null = null;
+  const profiles = new Map<string, SaviyntProfileState>();
+  const tokenCache = new Map<string, SaviyntTokenState>();
+  let activeProfileId: string | null = null;
+  const toolCallContext = new AsyncLocalStorage<{ profileId?: string }>();
 
-  const ensureAuthFromEnvironment = (preferredBaseUrl?: string): SaviyntAuthState | null => {
-    if (authState) {
-      return authState;
+  const getTokenCacheKey = (profileId: string, baseUrl: string): string =>
+    `${profileId}::${normalizeBaseUrl(baseUrl)}`;
+
+  const clearTokenCacheForProfile = (profileId: string): void => {
+    for (const key of tokenCache.keys()) {
+      if (key.startsWith(`${profileId}::`)) {
+        tokenCache.delete(key);
+      }
+    }
+  };
+
+  const clearTokenCacheForProfileBaseUrl = (profileId: string, baseUrl: string): void => {
+    tokenCache.delete(getTokenCacheKey(profileId, baseUrl));
+  };
+
+  const upsertProfile = (
+    profile: Omit<SaviyntProfileState, "updatedAt">,
+    setActive = true
+  ): SaviyntProfileState => {
+    const existing = profiles.get(profile.profileId);
+    if (
+      existing &&
+      (existing.baseUrl !== profile.baseUrl ||
+        existing.username !== profile.username ||
+        existing.password !== profile.password)
+    ) {
+      clearTokenCacheForProfile(profile.profileId);
     }
 
+    const next: SaviyntProfileState = {
+      ...profile,
+      updatedAt: Date.now(),
+    };
+    profiles.set(next.profileId, next);
+    if (setActive) {
+      activeProfileId = next.profileId;
+    }
+    return next;
+  };
+
+  const ensureAuthFromEnvironment = (preferredBaseUrl?: string): SaviyntProfileState | null => {
     if (!serviceUsername || !servicePassword) {
       return null;
     }
@@ -377,34 +433,79 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
       return null;
     }
 
-    authState = {
-      username: serviceUsername,
-      password: servicePassword,
-      baseUrl: normalizeBaseUrl(envBaseUrl),
-      source: "env",
-    };
-    return authState;
+    return upsertProfile(
+      {
+        profileId: ENV_PROFILE_ID,
+        username: serviceUsername,
+        password: servicePassword,
+        baseUrl: normalizeBaseUrl(envBaseUrl),
+        source: "env",
+      },
+      !activeProfileId
+    );
   };
 
-  const ensureLoggedIn = (preferredBaseUrl?: string): SaviyntAuthState => {
-    ensureAuthFromEnvironment(preferredBaseUrl);
+  const resolveExistingProfile = (requestedProfileId?: string): SaviyntProfileState | null => {
+    const explicitProfileId = asString(requestedProfileId);
+    if (explicitProfileId) {
+      return profiles.get(explicitProfileId) || null;
+    }
 
-    if (!authState || !asString(authState.username) || !asString(authState.password)) {
+    if (activeProfileId) {
+      const activeProfile = profiles.get(activeProfileId);
+      if (activeProfile) {
+        return activeProfile;
+      }
+      activeProfileId = null;
+    }
+
+    return null;
+  };
+
+  const ensureLoggedInProfile = (
+    requestedProfileId?: string,
+    preferredBaseUrl?: string
+  ): SaviyntProfileState => {
+    const explicitProfileId = asString(requestedProfileId);
+    if (explicitProfileId) {
+      const profile = profiles.get(explicitProfileId);
+      if (profile) {
+        return profile;
+      }
+      if (explicitProfileId === ENV_PROFILE_ID) {
+        const envProfile = ensureAuthFromEnvironment(preferredBaseUrl);
+        if (envProfile) {
+          return envProfile;
+        }
+      }
       throw new LoginRequiredError(
-        "Login required before calling Saviynt tools. Use `login`/`saviynt_login`, or set SAVIYNT_SERVICE_USERNAME and SAVIYNT_SERVICE_PASSWORD."
+        `Profile '${explicitProfileId}' was not found. Call saviynt_upsert_profile or saviynt_login first.`
       );
     }
-    return authState;
+
+    const existingProfile = resolveExistingProfile();
+    if (existingProfile) {
+      return existingProfile;
+    }
+
+    const envProfile = ensureAuthFromEnvironment(preferredBaseUrl);
+    if (envProfile) {
+      return envProfile;
+    }
+
+    throw new LoginRequiredError(
+      "Login required before calling Saviynt tools. Use saviynt_upsert_profile/saviynt_login, or set SAVIYNT_SERVICE_USERNAME and SAVIYNT_SERVICE_PASSWORD."
+    );
   };
 
-  const resolveBaseUrl = (value?: string): string => {
+  const resolveBaseUrl = (value?: string, profile?: SaviyntProfileState | null): string => {
     const fromArg = asString(value);
     if (fromArg) {
       return normalizeBaseUrl(fromArg);
     }
 
-    if (authState?.baseUrl) {
-      return authState.baseUrl;
+    if (profile?.baseUrl) {
+      return profile.baseUrl;
     }
 
     if (defaultBaseUrl) {
@@ -416,6 +517,50 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     );
   };
 
+  const resolveProfileForRequest = (
+    requestedProfileId?: string,
+    preferredBaseUrl?: string
+  ): SaviyntProfileState | null => {
+    const explicitProfileId = asString(requestedProfileId);
+    if (explicitProfileId) {
+      const profile = profiles.get(explicitProfileId);
+      if (profile) {
+        return profile;
+      }
+
+      if (explicitProfileId === ENV_PROFILE_ID) {
+        return ensureAuthFromEnvironment(preferredBaseUrl);
+      }
+
+      return null;
+    }
+
+    return resolveExistingProfile() || ensureAuthFromEnvironment(preferredBaseUrl);
+  };
+
+  const getProfileTokenState = (profile: SaviyntProfileState): SaviyntTokenState | null => {
+    const key = getTokenCacheKey(profile.profileId, profile.baseUrl);
+    return tokenCache.get(key) || null;
+  };
+
+  const getProfileSummary = (profile: SaviyntProfileState): JsonObject => {
+    const tokenState = getProfileTokenState(profile);
+    const tokenExpiresAt = tokenState?.tokenExpiresAt;
+    const tokenValid = Boolean(tokenExpiresAt && Date.now() < tokenExpiresAt);
+
+    return {
+      profileId: profile.profileId,
+      source: profile.source,
+      username: profile.username,
+      baseUrl: profile.baseUrl,
+      active: profile.profileId === activeProfileId,
+      hasToken: Boolean(tokenState?.bearerToken),
+      tokenValid,
+      tokenExpiresAt,
+      updatedAt: profile.updatedAt,
+    };
+  };
+
   const ensureWritesEnabled = (toolName: string): void => {
     if (writesEnabled) {
       return;
@@ -425,27 +570,32 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     );
   };
 
-  const ensureBearerToken = async (forceRefresh = false): Promise<string> => {
-    const auth = ensureLoggedIn();
+  const ensureBearerToken = async (
+    forceRefresh = false,
+    requestedProfileId?: string,
+    preferredBaseUrl?: string
+  ): Promise<string> => {
+    const profile = ensureLoggedInProfile(requestedProfileId, preferredBaseUrl);
+    const baseUrl = resolveBaseUrl(preferredBaseUrl, profile);
+    const cacheKey = getTokenCacheKey(profile.profileId, baseUrl);
+    const cachedToken = tokenCache.get(cacheKey);
 
-    if (
-      !forceRefresh &&
-      auth.bearerToken &&
-      auth.tokenExpiresAt &&
-      Date.now() < auth.tokenExpiresAt
-    ) {
-      return auth.bearerToken;
+    if (!forceRefresh && cachedToken?.bearerToken && cachedToken.tokenExpiresAt) {
+      if (Date.now() < cachedToken.tokenExpiresAt) {
+        return cachedToken.bearerToken;
+      }
+      tokenCache.delete(cacheKey);
     }
 
     const attempts: string[] = [];
     const payloadCandidates: JsonObject[] = [
-      { username: auth.username, password: auth.password },
-      { username: auth.username, password: auth.password, grant_type: "password" },
+      { username: profile.username, password: profile.password },
+      { username: profile.username, password: profile.password, grant_type: "password" },
     ];
 
     for (const endpoint of LOGIN_ENDPOINTS) {
       for (const payload of payloadCandidates) {
-        const requestUrl = new URL(endpoint, auth.baseUrl);
+        const requestUrl = new URL(endpoint, baseUrl);
         const response = await fetch(requestUrl.toString(), {
           method: "POST",
           headers: {
@@ -469,26 +619,35 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
 
         const expiresInSeconds = getTokenExpirySeconds(parsedBody);
         const refreshSeconds = Math.max(30, Math.floor(expiresInSeconds * 0.92));
-        auth.bearerToken = token;
-        auth.tokenExpiresAt = Date.now() + refreshSeconds * 1000;
+        tokenCache.set(cacheKey, {
+          bearerToken: token,
+          tokenExpiresAt: Date.now() + refreshSeconds * 1000,
+        });
+        activeProfileId = profile.profileId;
         return token;
       }
     }
 
-    throw new Error(`Unable to authenticate with Saviynt. Attempts: ${attempts.join(" | ")}`);
+    throw new Error(
+      `Unable to authenticate profile '${profile.profileId}' with Saviynt. Attempts: ${attempts.join(" | ")}`
+    );
   };
 
   const callSaviyntApi = async (opts: ApiRequestOptions): Promise<unknown> => {
+    const contextProfileId = toolCallContext.getStore()?.profileId;
+    const requestedProfileId = asString(opts.profileId) || contextProfileId;
     const method = opts.method || "GET";
     const requiresAuth = opts.requiresAuth ?? true;
     const retryOnUnauthorized = opts.retryOnUnauthorized ?? true;
-    const baseUrl = resolveBaseUrl(opts.baseUrl);
-    const auth = requiresAuth ? ensureLoggedIn(baseUrl) : authState;
-    if (requiresAuth && auth.baseUrl !== baseUrl) {
-      auth.baseUrl = baseUrl;
-      auth.bearerToken = undefined;
-      auth.tokenExpiresAt = undefined;
+    const profile = requiresAuth
+      ? ensureLoggedInProfile(requestedProfileId, opts.baseUrl)
+      : resolveProfileForRequest(requestedProfileId, opts.baseUrl);
+    if (requestedProfileId && !profile) {
+      throw new LoginRequiredError(
+        `Profile '${requestedProfileId}' was not found. Call saviynt_upsert_profile or saviynt_login first.`
+      );
     }
+    const baseUrl = resolveBaseUrl(opts.baseUrl, profile);
 
     const url = new URL(opts.endpoint, baseUrl);
     appendQuery(url, opts.query);
@@ -501,7 +660,7 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     }
 
     if (requiresAuth) {
-      const token = await ensureBearerToken(false);
+      const token = await ensureBearerToken(false, profile?.profileId, baseUrl);
       headers.Authorization = `Bearer ${token}`;
     }
 
@@ -512,13 +671,14 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     });
 
     if (response.status === 401 && retryOnUnauthorized && requiresAuth) {
-      if (auth) {
-        auth.bearerToken = undefined;
-        auth.tokenExpiresAt = undefined;
+      if (profile) {
+        clearTokenCacheForProfileBaseUrl(profile.profileId, baseUrl);
       }
-      await ensureBearerToken(true);
+      await ensureBearerToken(true, profile?.profileId, baseUrl);
       return callSaviyntApi({
         ...opts,
+        baseUrl,
+        profileId: profile?.profileId,
         retryOnUnauthorized: false,
       });
     }
@@ -535,27 +695,43 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     return parsedBody;
   };
 
+  const profileIdInputSchema = z
+    .string()
+    .min(1)
+    .optional()
+    .describe("Optional auth profile ID. If omitted, the active profile is used.");
+
   const registerTool = (
     name: string,
     description: string,
     inputSchema: Record<string, z.ZodTypeAny>,
-    handler: (args: JsonObject) => Promise<CallToolResult>
+    handler: (args: JsonObject) => Promise<CallToolResult>,
+    options: { includeProfileId?: boolean } = {}
   ): void => {
+    const includeProfileId = options.includeProfileId ?? true;
+    const schemaWithProfileId =
+      includeProfileId && !Object.prototype.hasOwnProperty.call(inputSchema, "profileId")
+        ? { ...inputSchema, profileId: profileIdInputSchema }
+        : inputSchema;
+
     server.registerTool(
       name,
       {
         description,
-        inputSchema,
+        inputSchema: schemaWithProfileId,
       },
       async (args) => {
-        try {
-          return await handler(args as JsonObject);
-        } catch (error) {
-          if (error instanceof LoginRequiredError) {
-            return loginRequiredResult(error.message);
+        const parsedArgs = args as JsonObject;
+        return toolCallContext.run({ profileId: asString(parsedArgs.profileId) }, async () => {
+          try {
+            return await handler(parsedArgs);
+          } catch (error) {
+            if (error instanceof LoginRequiredError) {
+              return loginRequiredResult(error.message);
+            }
+            return errorResult(`Tool '${name}' failed`, toErrorMessage(error));
           }
-          return errorResult(`Tool '${name}' failed`, toErrorMessage(error));
-        }
+        });
       }
     );
   };
@@ -564,13 +740,16 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     const username = asString(args.username);
     const password = asString(args.password);
     const providedUrl = asString(args.url);
+    const requestedProfileId = asString(args.profileId) || activeProfileId || DEFAULT_PROFILE_ID;
+    const setActive = asBoolean(args.setActive) ?? true;
 
     if (!username || !password) {
       return errorResult("Both 'username' and 'password' are required.");
     }
 
+    const existingProfile = profiles.get(requestedProfileId);
     const resolvedBaseUrl = normalizeBaseUrl(
-      providedUrl || authState?.baseUrl || defaultBaseUrl || ""
+      providedUrl || existingProfile?.baseUrl || defaultBaseUrl || ""
     );
     if (!resolvedBaseUrl) {
       return errorResult(
@@ -578,90 +757,226 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
       );
     }
 
-    authState = {
-      username,
-      password,
-      baseUrl: resolvedBaseUrl,
-      source: "session",
-    };
+    const profile = upsertProfile(
+      {
+        profileId: requestedProfileId,
+        username,
+        password,
+        baseUrl: resolvedBaseUrl,
+        source: "session",
+      },
+      setActive
+    );
 
-    const token = await ensureBearerToken(true);
+    const token = await ensureBearerToken(true, profile.profileId, profile.baseUrl);
+    const tokenState = getProfileTokenState(profile);
     return okResult({
       success: true,
       authenticated: true,
+      profileId: profile.profileId,
       username,
       baseUrl: resolvedBaseUrl,
+      activeProfileId,
+      setActive,
       hasToken: Boolean(token),
-      tokenExpiresAt: authState.tokenExpiresAt,
+      tokenExpiresAt: tokenState?.tokenExpiresAt,
+    });
+  };
+
+  const profileStatusHandler = async (): Promise<CallToolResult> => {
+    ensureAuthFromEnvironment();
+
+    const profilesList = Array.from(profiles.values())
+      .sort((a, b) => a.profileId.localeCompare(b.profileId))
+      .map((profile) => getProfileSummary(profile));
+
+    if (profilesList.length === 0) {
+      return okResult({
+        authenticated: false,
+        profileCount: 0,
+        activeProfileId: null,
+        message:
+          "No profiles configured. Call saviynt_upsert_profile/saviynt_login or set SAVIYNT_SERVICE_USERNAME and SAVIYNT_SERVICE_PASSWORD.",
+      });
+    }
+
+    const activeProfile =
+      (activeProfileId && profiles.get(activeProfileId)) || profiles.get(ENV_PROFILE_ID) || null;
+    if (activeProfile && activeProfile.profileId !== activeProfileId) {
+      activeProfileId = activeProfile.profileId;
+    }
+
+    return okResult({
+      authenticated: true,
+      profileCount: profilesList.length,
+      activeProfileId,
+      profiles: profilesList,
     });
   };
 
   registerTool(
-    "saviynt_login",
-    "Authenticate with Saviynt and cache a bearer token for this MCP session.",
+    "saviynt_upsert_profile",
+    "Create or update a Saviynt auth profile and optionally authenticate it now.",
     {
+      profileId: z.string().min(1).optional().describe(`Default: ${DEFAULT_PROFILE_ID}`),
+      username: z.string().min(1).describe("Saviynt username"),
+      password: z.string().min(1).describe("Saviynt password"),
+      url: z.string().url().describe("Saviynt base URL"),
+      setActive: z.boolean().optional().describe("Default: true"),
+      authenticate: z.boolean().optional().describe("Default: true"),
+    },
+    async (args) => {
+      const profileId = asString(args.profileId) || activeProfileId || DEFAULT_PROFILE_ID;
+      const username = asString(args.username);
+      const password = asString(args.password);
+      const url = asString(args.url);
+      const setActive = asBoolean(args.setActive) ?? true;
+      const authenticate = asBoolean(args.authenticate) ?? true;
+
+      if (!username || !password || !url) {
+        return errorResult("Arguments 'username', 'password', and 'url' are required.");
+      }
+
+      const profile = upsertProfile(
+        {
+          profileId,
+          username,
+          password,
+          baseUrl: normalizeBaseUrl(url),
+          source: "session",
+        },
+        setActive
+      );
+
+      if (authenticate) {
+        await ensureBearerToken(true, profile.profileId, profile.baseUrl);
+      } else {
+        clearTokenCacheForProfileBaseUrl(profile.profileId, profile.baseUrl);
+      }
+
+      return okResult({
+        success: true,
+        profile: getProfileSummary(profile),
+        authenticatedNow: authenticate,
+      });
+    },
+    { includeProfileId: false }
+  );
+
+  registerTool(
+    "saviynt_login",
+    "Compatibility auth helper that creates/updates a profile and authenticates it.",
+    {
+      profileId: z.string().min(1).optional().describe(`Default: ${DEFAULT_PROFILE_ID}`),
       username: z.string().min(1).describe("Saviynt username"),
       password: z.string().min(1).describe("Saviynt password"),
       url: z.string().url().optional().describe("Saviynt base URL"),
+      setActive: z.boolean().optional().describe("Default: true"),
     },
-    loginHandler
+    loginHandler,
+    { includeProfileId: false }
   );
 
   registerTool(
     "login",
     "Compatibility alias for saviynt_login.",
     {
+      profileId: z.string().min(1).optional(),
       username: z.string().min(1).describe("Saviynt username"),
       password: z.string().min(1).describe("Saviynt password"),
       url: z.string().url().optional().describe("Saviynt base URL"),
+      setActive: z.boolean().optional(),
     },
-    loginHandler
+    loginHandler,
+    { includeProfileId: false }
+  );
+
+  registerTool(
+    "saviynt_set_active_profile",
+    "Set the active profile for calls that omit profileId.",
+    {
+      profileId: z.string().min(1),
+    },
+    async (args) => {
+      const profileId = asString(args.profileId);
+      if (!profileId) {
+        return errorResult("Missing required argument: profileId");
+      }
+
+      const profile =
+        profiles.get(profileId) ||
+        (profileId === ENV_PROFILE_ID ? ensureAuthFromEnvironment() : null);
+      if (!profile) {
+        return errorResult(
+          `Profile '${profileId}' does not exist. Call saviynt_upsert_profile or saviynt_login first.`
+        );
+      }
+
+      activeProfileId = profile.profileId;
+      return okResult({
+        success: true,
+        activeProfileId,
+        profile: getProfileSummary(profile),
+      });
+    },
+    { includeProfileId: false }
+  );
+
+  registerTool(
+    "saviynt_list_profiles",
+    "List configured auth profiles and token state.",
+    {},
+    async () => profileStatusHandler(),
+    { includeProfileId: false }
+  );
+
+  registerTool(
+    "saviynt_delete_profile",
+    "Delete a profile and all cached tokens for that profile.",
+    {
+      profileId: z.string().min(1),
+    },
+    async (args) => {
+      const profileId = asString(args.profileId);
+      if (!profileId) {
+        return errorResult("Missing required argument: profileId");
+      }
+
+      if (!profiles.has(profileId)) {
+        return errorResult(`Profile '${profileId}' does not exist.`);
+      }
+
+      profiles.delete(profileId);
+      clearTokenCacheForProfile(profileId);
+
+      if (activeProfileId === profileId) {
+        activeProfileId = null;
+        ensureAuthFromEnvironment();
+      }
+
+      return okResult({
+        success: true,
+        deletedProfileId: profileId,
+        activeProfileId,
+      });
+    },
+    { includeProfileId: false }
   );
 
   registerTool(
     "saviynt_get_token_status",
-    "Return the current login/token state for this MCP session.",
+    "Return profile and token state for this MCP session.",
     {},
-    async () => {
-      const currentAuth = authState || ensureAuthFromEnvironment();
-      if (!currentAuth) {
-        return okResult({
-          authenticated: false,
-          message:
-            "Not logged in. Call saviynt_login, or set SAVIYNT_SERVICE_USERNAME/SAVIYNT_SERVICE_PASSWORD.",
-        });
-      }
-
-      const valid = Boolean(currentAuth.tokenExpiresAt && Date.now() < currentAuth.tokenExpiresAt);
-      return okResult({
-        authenticated: true,
-        source: currentAuth.source,
-        username: currentAuth.username,
-        baseUrl: currentAuth.baseUrl,
-        hasToken: Boolean(currentAuth.bearerToken),
-        tokenValid: valid,
-        tokenExpiresAt: currentAuth.tokenExpiresAt,
-      });
-    }
+    async () => profileStatusHandler(),
+    { includeProfileId: false }
   );
 
   registerTool(
     "get_token_status",
     "Compatibility alias for saviynt_get_token_status.",
     {},
-    async () => {
-      const currentAuth = authState || ensureAuthFromEnvironment();
-      if (!currentAuth) {
-        return okResult({ authenticated: false, message: "Not logged in." });
-      }
-      return okResult({
-        authenticated: true,
-        source: currentAuth.source,
-        username: currentAuth.username,
-        baseUrl: currentAuth.baseUrl,
-        tokenExpiresAt: currentAuth.tokenExpiresAt,
-      });
-    }
+    async () => profileStatusHandler(),
+    { includeProfileId: false }
   );
 
   registerTool(
@@ -1727,21 +2042,14 @@ export function createSaviyntMcpServer(options: CreateSaviyntServerOptions = {})
     const endpointLower = endpoint.toLowerCase();
     const authOptionalPath = endpointLower.includes("/login") || endpointLower.includes("/token");
     const requiresAuth = !authOptionalPath;
-    if (requiresAuth) {
-      ensureAuthFromEnvironment(asString(args.url));
-    }
-
-    const baseUrlValue = asString(args.url) || authState?.baseUrl || defaultBaseUrl;
-    if (!baseUrlValue) {
-      return errorResult("Missing base URL. Provide `url` in this call or set SAVIYNT_BASE_URL.");
-    }
 
     const result = await callSaviyntApi({
       endpoint,
       method,
       query: asObject(args.params),
       body: asObject(args.body),
-      baseUrl: baseUrlValue,
+      baseUrl: asString(args.url),
+      profileId: asString(args.profileId),
       requiresAuth,
     });
 
